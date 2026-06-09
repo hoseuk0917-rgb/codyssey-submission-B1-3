@@ -1,0 +1,111 @@
+--- src/index.ts.bak_b1_3_health_report_20260609	2026-06-09 14:33:34.767252582 +0900
++++ src/index.ts	2026-06-09 15:02:20.795396116 +0900
+@@ -632,6 +632,108 @@
+             return resp;
+         }
+ 
++
++        if (url.pathname === "/health-report" && request.method === "GET") {
++            const db: any = (env as any).DB;
++            if (!db) {
++                return new Response(JSON.stringify({ ok: false, status: "error", error: "missing DB" }), {
++                    status: 500,
++                    headers: { "content-type": "application/json; charset=utf-8" },
++                });
++            }
++
++            try {
++                const latestRun: any = await db.prepare("SELECT id, job_name, status, started_at, ended_at, finished_at, error, error_message, stats FROM runs ORDER BY started_at DESC LIMIT 1;").first();
++
++                const latestCuration: any = await db.prepare("SELECT as_of_date, page, COUNT(*) AS n FROM curations WHERE page IN ('home', 'home_deep') GROUP BY as_of_date, page ORDER BY as_of_date DESC LIMIT 1;").first();
++
++                const itemStats: any = await db.prepare("SELECT COUNT(*) AS total_items, SUM(CASE WHEN date(COALESCE(fetched_at, updated_at, created_at)) = date('now') THEN 1 ELSE 0 END) AS today_items FROM items;").first();
++
++                const assetStats: any = await db.prepare("SELECT COUNT(*) AS total_assets FROM item_assets WHERE COALESCE(is_active, 1) = 1;").first();
++
++                const clusterStats: any = await db.prepare("SELECT COUNT(*) AS total_clusters FROM clusters;").first();
++
++                const latestRunStatus = String(latestRun?.status || "unknown");
++                const todayItems = Number(itemStats?.today_items || 0);
++                const latestCurationCount = Number(latestCuration?.n || 0);
++
++                let status = "ok";
++                const warnings: string[] = [];
++
++                if (latestRunStatus === "error") {
++                    status = "error";
++                    warnings.push("latest_run_error");
++                }
++
++                if (todayItems === 0) {
++                    status = status === "error" ? "error" : "warning";
++                    warnings.push("today_items_zero");
++                }
++
++                if (latestCurationCount === 0) {
++                    status = status === "error" ? "error" : "warning";
++                    warnings.push("latest_curation_zero");
++                }
++
++                const body = {
++                    ok: status !== "error",
++                    status,
++                    checked_at: new Date().toISOString(),
++                    latest_run: latestRun
++                        ? {
++                              id: latestRun.id,
++                              job_name: latestRun.job_name,
++                              status: latestRun.status,
++                              started_at: latestRun.started_at,
++                              ended_at: latestRun.ended_at || latestRun.finished_at || null,
++                              error: latestRun.error || latestRun.error_message || null,
++                          }
++                        : null,
++                    latest_curation: latestCuration
++                        ? {
++                              as_of_date: latestCuration.as_of_date,
++                              page: latestCuration.page,
++                              count: latestCurationCount,
++                          }
++                        : null,
++                    metrics: {
++                        total_items: Number(itemStats?.total_items || 0),
++                        today_items: todayItems,
++                        total_assets: Number(assetStats?.total_assets || 0),
++                        total_clusters: Number(clusterStats?.total_clusters || 0),
++                    },
++                    warnings,
++                    message:
++                        status === "ok"
++                            ? "harvest pipeline healthy"
++                            : status === "warning"
++                              ? "harvest pipeline needs review"
++                              : "harvest pipeline error detected",
++                };
++
++                return new Response(JSON.stringify(body), {
++                    status: 200,
++                    headers: {
++                        "content-type": "application/json; charset=utf-8",
++                        "cache-control": "no-store",
++                    },
++                });
++            } catch (e: any) {
++                return new Response(
++                    JSON.stringify({
++                        ok: false,
++                        status: "error",
++                        checked_at: new Date().toISOString(),
++                        error: String(e?.message || e),
++                    }),
++                    {
++                        status: 500,
++                        headers: { "content-type": "application/json; charset=utf-8" },
++                    }
++                );
++            }
++        }
++
+         if ((url.pathname === "/__run" || url.pathname === "/__scheduled") && request.method === "POST") {
+             let mode = parseMode(url, env);
+ 
