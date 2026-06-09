@@ -1,0 +1,208 @@
+--- src/index.ts.bak_b1_3_health_report_20260609	2026-06-09 14:33:34.767252582 +0900
++++ src/index.ts	2026-06-09 15:49:52.947393202 +0900
+@@ -632,6 +632,205 @@
+             return resp;
+         }
+ 
++
++        if (url.pathname === "/health-report" && request.method === "GET") {
++            const db: any = (env as any).DB;
++            if (!db) {
++                return new Response(JSON.stringify({ ok: false, status: "error", error: "missing DB" }), {
++                    status: 500,
++                    headers: { "content-type": "application/json; charset=utf-8" },
++                });
++            }
++
++            try {
++                const latestRun: any = await db
++                    .prepare("SELECT id, job_name, status, started_at, ended_at, finished_at, error, error_message, stats FROM runs ORDER BY started_at DESC LIMIT 1;")
++                    .first();
++
++                const latestCuration: any = await db
++                    .prepare("SELECT as_of_date, page, COUNT(*) AS n FROM curations WHERE page IN ('home', 'home_deep') GROUP BY as_of_date, page ORDER BY as_of_date DESC LIMIT 1;")
++                    .first();
++
++                const itemStats: any = await db
++                    .prepare("SELECT COUNT(*) AS total_items, SUM(CASE WHEN date(COALESCE(fetched_at, updated_at, created_at)) = date('now') THEN 1 ELSE 0 END) AS today_items FROM items;")
++                    .first();
++
++                const assetStats: any = await db
++                    .prepare("SELECT COUNT(*) AS total_assets FROM item_assets WHERE COALESCE(is_active, 1) = 1;")
++                    .first();
++
++                const clusterStats: any = await db.prepare("SELECT COUNT(*) AS total_clusters FROM clusters;").first();
++
++                const curationStats: any = await db.prepare("SELECT COUNT(*) AS total_curations FROM curations;").first();
++                const runStats: any = await db.prepare("SELECT COUNT(*) AS total_runs FROM runs;").first();
++                const sourceStats: any = await db.prepare("SELECT COUNT(*) AS total_run_sources FROM run_sources;").first();
++
++                const todayRunSummary: any = await db
++                    .prepare(
++                        "SELECT COUNT(*) AS total, SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error, SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running FROM runs WHERE date(started_at)=date('now');"
++                    )
++                    .first();
++
++                const recentRunsRs: any = await db
++                    .prepare(
++                        "SELECT id, job_name, status, started_at, ended_at, finished_at, error, error_message, stats FROM runs ORDER BY started_at DESC LIMIT 8;"
++                    )
++                    .all();
++                const recentRunsRaw = Array.isArray(recentRunsRs?.results) ? recentRunsRs.results : [];
++
++                const todayRunSourcesRs: any = await db
++                    .prepare(
++                        "SELECT r.id AS run_id, r.job_name AS job_name, r.status AS run_status, COUNT(rs.run_id) AS sources, COALESCE(SUM(rs.items_seen),0) AS items_seen, COALESCE(SUM(rs.items_upserted),0) AS items_upserted, SUM(CASE WHEN rs.status='ok' THEN 1 ELSE 0 END) AS source_ok, SUM(CASE WHEN rs.status='error' THEN 1 ELSE 0 END) AS source_error FROM runs r LEFT JOIN run_sources rs ON rs.run_id = r.id WHERE date(r.started_at)=date('now') GROUP BY r.id, r.job_name, r.status, r.started_at ORDER BY r.started_at DESC LIMIT 8;"
++                    )
++                    .all();
++                const todayRunSources = Array.isArray(todayRunSourcesRs?.results) ? todayRunSourcesRs.results : [];
++
++                const parseStats = (value: any) => {
++                    try {
++                        return value ? JSON.parse(String(value)) : {};
++                    } catch {
++                        return {};
++                    }
++                };
++
++                const recentRuns = recentRunsRaw.map((r: any) => ({
++                    id: r.id,
++                    job_name: r.job_name,
++                    status: r.status,
++                    started_at: r.started_at,
++                    ended_at: r.ended_at || r.finished_at || null,
++                    error: r.error || r.error_message || null,
++                    stats: parseStats(r.stats),
++                }));
++
++                const latestRunStatus = String(latestRun?.status || "unknown");
++                const todayItems = Number(itemStats?.today_items || 0);
++                const latestCurationCount = Number(latestCuration?.n || 0);
++                const todayRunTotal = Number(todayRunSummary?.total || 0);
++                const todayRunErrors = Number(todayRunSummary?.error || 0);
++                const runningRuns = Number(todayRunSummary?.running || 0);
++
++                let status = "ok";
++                const warnings: string[] = [];
++
++                if (latestRunStatus === "error" || todayRunErrors > 0) {
++                    status = "error";
++                    warnings.push("run_error_detected");
++                }
++
++                if (runningRuns > 0) {
++                    status = status === "error" ? "error" : "warning";
++                    warnings.push("run_still_running");
++                }
++
++                if (todayRunTotal === 0) {
++                    status = status === "error" ? "error" : "warning";
++                    warnings.push("today_runs_zero");
++                }
++
++                if (todayItems === 0) {
++                    status = status === "error" ? "error" : "warning";
++                    warnings.push("today_items_zero");
++                }
++
++                if (latestCurationCount === 0) {
++                    status = status === "error" ? "error" : "warning";
++                    warnings.push("latest_curation_zero");
++                }
++
++                const body = {
++                    ok: status !== "error",
++                    status,
++                    checked_at: new Date().toISOString(),
++                    d1_capacity: {
++                        free_plan_limit_gb: 10,
++                        usage_bytes: null,
++                        usage_gb: null,
++                        usage_percent: null,
++                        usage_note:
++                            "D1 SQL does not expose exact database file size here. This report uses table row counts and daily growth as operational capacity indicators; exact storage usage should be checked in the Cloudflare dashboard.",
++                    },
++                    latest_run: latestRun
++                        ? {
++                              id: latestRun.id,
++                              job_name: latestRun.job_name,
++                              status: latestRun.status,
++                              started_at: latestRun.started_at,
++                              ended_at: latestRun.ended_at || latestRun.finished_at || null,
++                              error: latestRun.error || latestRun.error_message || null,
++                              stats: parseStats(latestRun.stats),
++                          }
++                        : null,
++                    latest_curation: latestCuration
++                        ? {
++                              as_of_date: latestCuration.as_of_date,
++                              page: latestCuration.page,
++                              count: latestCurationCount,
++                          }
++                        : null,
++                    today_runs: {
++                        count: todayRunTotal,
++                        ok: Number(todayRunSummary?.ok || 0),
++                        error: todayRunErrors,
++                        running: runningRuns,
++                    },
++                    today_run_sources: todayRunSources.map((r: any) => ({
++                        run_id: r.run_id,
++                        job_name: r.job_name,
++                        run_status: r.run_status,
++                        sources: Number(r.sources || 0),
++                        source_ok: Number(r.source_ok || 0),
++                        source_error: Number(r.source_error || 0),
++                        items_seen: Number(r.items_seen || 0),
++                        items_upserted: Number(r.items_upserted || 0),
++                    })),
++                    recent_runs: recentRuns,
++                    table_counts: {
++                        items: Number(itemStats?.total_items || 0),
++                        curations: Number(curationStats?.total_curations || 0),
++                        clusters: Number(clusterStats?.total_clusters || 0),
++                        item_assets: Number(assetStats?.total_assets || 0),
++                        runs: Number(runStats?.total_runs || 0),
++                        run_sources: Number(sourceStats?.total_run_sources || 0),
++                    },
++                    metrics: {
++                        total_items: Number(itemStats?.total_items || 0),
++                        today_items: todayItems,
++                        total_assets: Number(assetStats?.total_assets || 0),
++                        total_clusters: Number(clusterStats?.total_clusters || 0),
++                    },
++                    warnings,
++                    message:
++                        status === "ok"
++                            ? "harvest pipeline healthy"
++                            : status === "warning"
++                              ? "harvest pipeline needs review"
++                              : "harvest pipeline error detected",
++                };
++
++                return new Response(JSON.stringify(body), {
++                    status: 200,
++                    headers: {
++                        "content-type": "application/json; charset=utf-8",
++                        "cache-control": "no-store",
++                    },
++                });
++            } catch (e: any) {
++                return new Response(
++                    JSON.stringify({
++                        ok: false,
++                        status: "error",
++                        checked_at: new Date().toISOString(),
++                        error: String(e?.message || e),
++                    }),
++                    {
++                        status: 500,
++                        headers: { "content-type": "application/json; charset=utf-8" },
++                    }
++                );
++            }
++        }
++
+         if ((url.pathname === "/__run" || url.pathname === "/__scheduled") && request.method === "POST") {
+             let mode = parseMode(url, env);
+ 
