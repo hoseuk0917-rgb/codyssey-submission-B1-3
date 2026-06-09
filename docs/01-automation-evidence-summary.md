@@ -102,3 +102,35 @@ Cloudflare Worker API
 
 
 
+
+## 10. Zapier 비교 구현 증거
+
+동일한 자동화 목적을 Zapier에서도 별도로 구현했다.
+
+Zapier 구성:
+
+Schedule by Zapier
+→ Webhooks by Zapier GET `https://home-curator.hoseuk0917.workers.dev/health-report`
+→ Filter by Zapier `status = ok`
+→ Google Sheets Create Spreadsheet Row
+
+확인 결과:
+
+- Webhook GET 호출 성공
+- Filter 조건 통과 확인
+- Google Sheets에 Zapier 실행 결과 행 추가 확인
+
+증거 파일:
+
+- `screenshots/08-zapier-webhook-success.png`
+- `screenshots/09-zapier-filter-success.png`
+- `screenshots/10-zapier-sheets-success.png`
+- `screenshots/11-zapier-sheets-output.png`
+
+## 11. Make와 Zapier 비교
+
+Make는 Router 분기와 Telegram 알림 구성이 시각적으로 명확했고, HTTP 응답값을 Google Sheets와 Telegram에 매핑하는 과정이 직관적이었다.
+
+Zapier는 Schedule, Webhook, Filter, Google Sheets 단계가 순차적으로 보여 자동화 흐름을 이해하기 쉬웠다. 다만 Google Sheets 헤더 인식과 중첩 JSON 필드 매핑은 Make보다 더 까다로웠다.
+
+이번 과제에서는 Make를 최종 운영 자동화 도구로, Zapier를 동일 워크플로우 비교 구현 도구로 사용했다.
